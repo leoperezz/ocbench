@@ -9,9 +9,3 @@ dist/
 
 exp/
 data/
-ipynbs/
-.rsync**
-*.sh
-!data_gen_scripts/commands.sh
-!impls/commands.sh
-experiments.txt

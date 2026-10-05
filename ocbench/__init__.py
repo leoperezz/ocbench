@@ -1,4 +1,4 @@
-"""OCBench manipulation environments."""
+"""OCBench: A Controllable Robotic Manipulation Benchmark"""
 
 import gymnasium
 from gymnasium.envs.registration import register, registry
