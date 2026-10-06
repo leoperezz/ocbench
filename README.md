@@ -9,6 +9,7 @@
 </div>
 
 <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10%2B-598BE7?style=for-the-badge&logo=python&logoColor=598BE7&labelColor=F0F0F0"/></a> &emsp;
+<a href="https://pypi.org/project/ocbench/"><img src="https://img.shields.io/pypi/v/ocbench?style=for-the-badge&labelColor=F0F0F0&color=598BE7"/></a> &emsp;
 <a href="https://docs.astral.sh/ruff/"><img src="https://img.shields.io/badge/Code style-ruff-598BE7?style=for-the-badge&labelColor=F0F0F0&color=598BE7"/></a> &emsp;
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-598BE7?style=for-the-badge&labelColor=F0F0F0&color=598BE7"/></a>
 
@@ -17,7 +18,7 @@
 <div id="toc">
   <ul align="center" style="list-style: none;">
     <summary>
-      <h2><a href="https://arxiv.org/abs/">Paper</a> &emsp; <a href="https://seohong.me/projects/ocbench/">Project page</a> &emsp; <a href="https://seohong.me/blog/behavioral-cloning-mystery/">Blog post</a></h2>
+      <h2><a href="https://seohong.me/projects/ocbench/ocbench.pdf">Paper</a> &emsp; <a href="https://seohong.me/projects/ocbench/">Project page</a> &emsp; <a href="https://seohong.me/blog/behavioral-cloning-mystery/">Blog post</a></h2>
     </summary>
   </ul>
 </div>
@@ -110,7 +111,7 @@ env.close()
 ### Tasks
 
 OCBench provides 28 manipulation tasks across 5 types of environments.
-See the [paper](https://arxiv.org/abs/) for more details.
+See the [paper](https://seohong.me/projects/ocbench/ocbench.pdf) for more details.
 
 | Environment | Tasks |
 | --- | --- |
@@ -243,10 +244,10 @@ This codebase is inspired by or partly uses code from the following repositories
 # Citation
 
 ```bibtex
-@article{ocbench_park2026,
-  title={{OCBench}},
+@misc{ocbench_park2026,
+  title={{Behavioral Cloning Mystery}},
   author={Park, Seohong and Levine, Sergey},
-  journal={arXiv preprint arXiv:XXXX.XXXXX},
   year={2026},
+  url={https://seohong.me/projects/ocbench/ocbench.pdf},
 }
 ```
