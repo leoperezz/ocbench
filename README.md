@@ -1,7 +1,7 @@
 <div align="center">
 
 <div id="user-content-toc">
-  <ul align="center" style="list-style: none;">
+  <ul align="center" type="none">
     <summary>
       <h1>OCBench</h1>
     </summary>
@@ -16,7 +16,7 @@
 ![image](assets/env_teaser.png)
 
 <div id="toc">
-  <ul align="center" style="list-style: none;">
+  <ul align="center" type="none">
     <summary>
       <h2><a href="https://arxiv.org/abs/2610.07056">Paper</a> &emsp; <a href="https://seohong.me/projects/ocbench/">Project page</a> &emsp; <a href="https://seohong.me/blog/behavioral-cloning-mystery/">Blog post</a></h2>
     </summary>
