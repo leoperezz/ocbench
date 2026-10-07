@@ -18,7 +18,7 @@
 <div id="toc">
   <ul align="center" style="list-style: none;">
     <summary>
-      <h2><a href="https://seohong.me/projects/ocbench/ocbench.pdf">Paper</a> &emsp; <a href="https://seohong.me/projects/ocbench/">Project page</a> &emsp; <a href="https://seohong.me/blog/behavioral-cloning-mystery/">Blog post</a></h2>
+      <h2><a href="https://arxiv.org/abs/2610.07056">Paper</a> &emsp; <a href="https://seohong.me/projects/ocbench/">Project page</a> &emsp; <a href="https://seohong.me/blog/behavioral-cloning-mystery/">Blog post</a></h2>
     </summary>
   </ul>
 </div>
@@ -111,7 +111,7 @@ env.close()
 ### Tasks
 
 OCBench provides 28 manipulation tasks across 5 types of environments.
-See the [paper](https://seohong.me/projects/ocbench/ocbench.pdf) for more details.
+See the [paper](https://arxiv.org/abs/2610.07056) for more details.
 
 | Environment | Tasks |
 | --- | --- |
@@ -244,10 +244,11 @@ This codebase is inspired by or partly uses code from the following repositories
 # Citation
 
 ```bibtex
-@misc{ocbench_park2026,
+@article{park2026behavioral,
   title={{Behavioral Cloning Mystery}},
   author={Park, Seohong and Levine, Sergey},
+  journal={ArXiv},
   year={2026},
-  url={https://seohong.me/projects/ocbench/ocbench.pdf},
+  volume={abs/2610.07056},
 }
 ```
