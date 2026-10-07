@@ -35,11 +35,14 @@ train = [
 dev = [
     "ruff",
 ]
+data = [
+    "lerobot[dataset] >= 0.4, < 0.7",
+]
 mjwarp = [
     "mujoco-warp",
 ]
 all = [
-    "ocbench[train,dev,mjwarp]",
+    "ocbench[train,dev,data,mjwarp]",
 ]
 
 [project.urls]
