@@ -19,7 +19,7 @@ MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
   --workers 8 \
   --cameras front side wrist \
   --video \
-  --video-encoder h264 \
+  --video-encoder h264_nvenc \
   --fps 30 \
   --output-dir data/lerobot/hanoi-triple-task2-rgb
 ```
@@ -34,6 +34,9 @@ Useful options include `--seed`, `--fps`, `--max-steps`,
 `--video-encoder`, `--[no-]successful-only`, `--max-attempts`, `--overwrite`, and
 `--push-to-hub`. Run the script with `--help` for the complete interface.
 
-Only the parent process writes the LeRobot dataset. Workers independently
-simulate episodes and stage them temporarily, which prevents concurrent
-Parquet/video metadata corruption.
+Rollouts run in parallel. At most one job per worker is in flight, and a new job
+is submitted only after a completed `.npz` has been appended to LeRobot and
+deleted. Consequently, temporary rollout storage is bounded by `--workers`
+episodes rather than growing with the total dataset. Streaming video encoding
+is enabled by default, avoiding temporary PNG frame directories as well. The
+final dataset itself naturally grows as episodes are added.

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Generate OCBench Hanoi RGB demonstrations as H.264 LeRobot v3 videos.
 
-Simulation workers only generate episodes.  The parent process is the sole
-LeRobotDataset writer, avoiding concurrent writes to Parquet, videos, and
-metadata.
+Rollouts run in parallel with a bounded queue: temporary storage grows with
+the worker count, never with the total number of requested episodes.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -57,11 +57,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--output-dir', type=Path, default=Path('data/lerobot/hanoi-triple-task2-rgb'))
-    parser.add_argument(
-        '--repo-id', default='local/hanoi-triple-task2-rgb', help='LeRobot/Hugging Face dataset ID.'
-    )
+    parser.add_argument('--repo-id', default='local/hanoi-triple-task2-rgb', help='LeRobot/Hugging Face dataset ID.')
     parser.add_argument('--num-episodes', type=int, default=100)
-    parser.add_argument('--workers', type=int, default=max(1, min(4, os.cpu_count() or 1)))
+    parser.add_argument(
+        '--workers',
+        type=int,
+        default=max(1, min(4, os.cpu_count() or 1)),
+        help='Parallel rollout workers. Temporary disk is bounded to at most one episode per worker.',
+    )
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--fps', type=int, default=DEFAULT_FPS)
     parser.add_argument('--physics-substeps', type=int, default=20)
@@ -88,6 +91,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help='H.264 encoder. Use h264_nvenc only when NVIDIA NVENC is available.',
     )
     parser.add_argument('--image-writer-threads', type=int, default=4)
+    parser.add_argument(
+        '--streaming-encoding',
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='Encode frames directly to video instead of staging temporary PNG files.',
+    )
+    parser.add_argument(
+        '--encoder-queue-size',
+        type=int,
+        default=256,
+        help='Maximum frames buffered per camera by the streaming video encoder.',
+    )
     parser.add_argument('--successful-only', action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument('--max-attempts', type=int, default=10, help='Attempts per requested successful episode.')
     parser.add_argument('--overwrite', action='store_true', help='Replace output-dir if it already exists.')
@@ -95,7 +110,17 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--private', action='store_true', help='Make the Hub dataset private when pushing.')
     args = parser.parse_args(argv)
 
-    for name in ('num_episodes', 'workers', 'fps', 'physics_substeps', 'max_steps', 'width', 'height', 'max_attempts'):
+    for name in (
+        'num_episodes',
+        'workers',
+        'fps',
+        'physics_substeps',
+        'max_steps',
+        'width',
+        'height',
+        'max_attempts',
+        'encoder_queue_size',
+    ):
         if getattr(args, name) <= 0:
             parser.error(f'--{name.replace("_", "-")} must be greater than zero')
     if len(set(args.cameras)) != len(args.cameras):
@@ -226,6 +251,7 @@ def _episode_jobs(num_episodes: int, root_seed: int) -> list[tuple[int, int]]:
 
 
 def _generate_episodes(config: WorkerConfig, jobs: list[tuple[int, int]], workers: int) -> Iterator[dict]:
+    """Run rollouts concurrently while bounding staged files by ``workers``."""
     if workers == 1:
         _init_worker(config)
         try:
@@ -235,6 +261,7 @@ def _generate_episodes(config: WorkerConfig, jobs: list[tuple[int, int]], worker
             _WORKER_ENV.close()
         return
 
+    job_iterator = iter(jobs)
     context = multiprocessing.get_context('spawn')
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=workers,
@@ -242,12 +269,33 @@ def _generate_episodes(config: WorkerConfig, jobs: list[tuple[int, int]], worker
         initializer=_init_worker,
         initargs=(config,),
     ) as executor:
-        futures = [executor.submit(_rollout_episode, *job) for job in jobs]
+        pending: set[concurrent.futures.Future] = set()
+
+        def submit_next() -> bool:
+            try:
+                job = next(job_iterator)
+            except StopIteration:
+                return False
+            pending.add(executor.submit(_rollout_episode, *job))
+            return True
+
+        for _ in range(min(workers, len(jobs))):
+            submit_next()
+
         try:
-            for future in futures:
+            while pending:
+                done, _ = concurrent.futures.wait(
+                    pending,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                future = next(iter(done))
+                pending.remove(future)
                 yield future.result()
+                # The generator resumes only after the caller has appended the
+                # yielded episode and removed its temporary file.
+                submit_next()
         except BaseException:
-            for future in futures:
+            for future in pending:
                 future.cancel()
             raise
 
@@ -300,15 +348,22 @@ def _validate_video_dataset(output_dir: Path, cameras: Sequence[str], fps: int) 
 
 def _append_episode(dataset, result: dict) -> None:
     episode_path = Path(result['path'])
-    with np.load(episode_path, mmap_mode='r', allow_pickle=False) as episode:
-        frame_keys = list(episode.files)
-        length = episode[frame_keys[0]].shape[0]
-        for frame_index in range(length):
-            frame = {key: episode[key][frame_index] for key in frame_keys}
-            frame['task'] = TASK_DESCRIPTION
-            dataset.add_frame(frame)
-        dataset.save_episode()
-    episode_path.unlink()
+    try:
+        with np.load(episode_path, mmap_mode='r', allow_pickle=False) as episode:
+            frame_keys = list(episode.files)
+            # NpzFile.__getitem__ reads an entire member on every access. Cache
+            # each array once instead of re-reading it for every frame.
+            arrays = {key: episode[key] for key in frame_keys}
+            length = arrays[frame_keys[0]].shape[0]
+            for frame_index in range(length):
+                frame = {key: arrays[key][frame_index] for key in frame_keys}
+                frame['task'] = TASK_DESCRIPTION
+                dataset.add_frame(frame)
+            dataset.save_episode()
+    finally:
+        # Temporary rollouts are disposable and must not accumulate, including
+        # when LeRobot raises while encoding or saving an episode.
+        episode_path.unlink(missing_ok=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -334,20 +389,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_attempts=args.max_attempts,
         )
         jobs = _episode_jobs(args.num_episodes, args.seed)
-        results = _generate_episodes(config, jobs, min(args.workers, args.num_episodes))
+        worker_count = min(args.workers, args.num_episodes)
+        results = _generate_episodes(config, jobs, worker_count)
         completed = 0
         total_frames = 0
-        with tqdm(
-            total=args.num_episodes,
-            desc='Generating LeRobot dataset',
-            unit='episode',
-            dynamic_ncols=True,
-        ) as progress:
+        with (
+            closing(results),
+            tqdm(
+                total=args.num_episodes,
+                desc='Generating LeRobot dataset',
+                unit='episode',
+                dynamic_ncols=True,
+            ) as progress,
+        ):
             first_result = next(results)
 
             with np.load(first_result['path'], mmap_mode='r', allow_pickle=False) as sample:
                 features = _features(sample, args.cameras)
-            encoder_preset = 'p1' if args.video_encoder == 'h264_nvenc' else 'veryfast'
+            # LeRobot 0.6/PyAV expects NVENC presets as integers (1 is the
+            # fastest); the FFmpeg-style string "p1" is rejected.
+            encoder_preset = 1 if args.video_encoder == 'h264_nvenc' else 'veryfast'
             rgb_encoder = RGBEncoderConfig(
                 vcodec=args.video_encoder,
                 pix_fmt='yuv420p',
@@ -362,8 +423,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 robot_type='ocbench_ur5e_robotiq_2f85',
                 features=features,
                 use_videos=True,
-                image_writer_threads=args.image_writer_threads,
+                image_writer_threads=0 if args.streaming_encoding else args.image_writer_threads,
                 rgb_encoder=rgb_encoder,
+                streaming_encoding=args.streaming_encoding,
+                encoder_queue_maxsize=args.encoder_queue_size,
             )
 
             try:
