@@ -32,6 +32,14 @@ DEFAULT_CAMERAS = ('front', 'side', 'wrist')
 CAMERA_RENDER_NAMES = {
     'wrist': 'ur5e/wrist',
 }
+ARM_JOINT_NAMES = (
+    'shoulder_pan',
+    'shoulder_lift',
+    'elbow',
+    'wrist_1',
+    'wrist_2',
+    'wrist_3',
+)
 
 
 @dataclass(frozen=True)
@@ -164,6 +172,28 @@ def _init_worker(config: WorkerConfig) -> None:
     )
 
 
+def _absolute_action(env, normalized_action: np.ndarray) -> np.ndarray:
+    """Return the actuator target produced by a normalized OCBench action."""
+    unwrapped = env.unwrapped
+    delta = unwrapped.unnormalize_action(normalized_action)
+
+    arm_ctrlrange = unwrapped._model.actuator_ctrlrange[unwrapped._arm_actuator_ids]
+    arm_target = unwrapped._data.qpos[unwrapped._arm_joint_ids] + delta[:6]
+    arm_target = np.clip(arm_target, arm_ctrlrange[:, 0], arm_ctrlrange[:, 1])
+
+    gripper_opening = unwrapped._data.qpos[unwrapped._gripper_opening_joint_id] / 0.8
+    gripper_target = np.clip(gripper_opening + delta[6], 0.0, 1.0)
+    return np.concatenate([arm_target, np.atleast_1d(gripper_target)]).astype(np.float32)
+
+
+def _joint_state(env) -> np.ndarray:
+    """Return absolute arm positions and normalized gripper opening."""
+    unwrapped = env.unwrapped
+    arm_position = unwrapped._data.qpos[unwrapped._arm_joint_ids]
+    gripper_opening = np.clip(unwrapped._data.qpos[unwrapped._gripper_opening_joint_id] / 0.8, 0.0, 1.0)
+    return np.concatenate([arm_position, np.atleast_1d(gripper_opening)]).astype(np.float32)
+
+
 def _rollout_episode(episode_index: int, seed: int) -> dict:
     from ocbench.oracles.controllers.hanoi import HanoiController
 
@@ -189,16 +219,17 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
         episode_healthy = True
 
         for step in range(config.max_steps):
-            action = np.asarray(controller.select_action(observation, info, transition_idx=step), dtype=np.float32)
-            action = np.clip(action, -1.0, 1.0)
+            env_action = np.asarray(controller.select_action(observation, info, transition_idx=step), dtype=np.float32)
+            env_action = np.clip(env_action, -1.0, 1.0)
+            stored_action = _absolute_action(env, env_action)
 
-            states.append(np.asarray(observation, dtype=np.float32))
-            actions.append(action)
+            states.append(_joint_state(env))
+            actions.append(stored_action)
             for camera in config.cameras:
                 render_camera = CAMERA_RENDER_NAMES.get(camera, camera)
                 images[camera].append(np.asarray(env.unwrapped.render(camera=render_camera), dtype=np.uint8))
 
-            next_observation, reward, terminated, truncated, info = env.step(action)
+            next_observation, reward, terminated, truncated, info = env.step(env_action)
             timed_out = step + 1 >= config.max_steps
             done = bool(terminated or truncated or timed_out)
             episode_success = episode_success or bool(info['success'])
@@ -301,13 +332,14 @@ def _generate_episodes(config: WorkerConfig, jobs: list[tuple[int, int]], worker
 
 
 def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str]) -> dict:
+    joint_names = [f'{name}.position_radians' for name in ARM_JOINT_NAMES] + ['gripper.opening']
     features = {
         'observation.state': {
             'dtype': 'float32',
             'shape': sample['observation.state'].shape[1:],
-            'names': None,
+            'names': joint_names,
         },
-        'action': {'dtype': 'float32', 'shape': sample['action'].shape[1:], 'names': None},
+        'action': {'dtype': 'float32', 'shape': sample['action'].shape[1:], 'names': joint_names},
         'next.reward': {'dtype': 'float32', 'shape': (1,), 'names': ['reward']},
         'next.done': {'dtype': 'bool', 'shape': (1,), 'names': ['done']},
         'next.success': {'dtype': 'bool', 'shape': (1,), 'names': ['success']},
