@@ -3,6 +3,7 @@ import warp as wp
 from ocbench.mjwarp.envs.manipulation_kernels import (
     _dist2_xy,
     _quat_yaw,
+    _reset_rand_int,
     _reset_rand_uniform,
 )
 from ocbench.mjwarp.primitives.primitive_kernels import (
@@ -81,6 +82,7 @@ def reset_hanoi_worlds(
     peg_yaw: wp.array2d[float],
     home_qpos: wp.array(dtype=float),
     base_peg_pos: wp.array(dtype=wp.vec3),
+    disk_staging_pos: wp.array(dtype=wp.vec3),
     down_xmat: wp.array(dtype=wp.mat33),
     t_pa_rot: wp.array(dtype=wp.mat33),
     t_pa_translation: wp.array(dtype=wp.vec3),
@@ -91,6 +93,7 @@ def reset_hanoi_worlds(
     num_pegs: int,
     init_peg: int,
     randomize_pegs: int,
+    scatter_disks: int,
     disk_half_height: float,
     disk_gap: float,
     arm_lo: wp.vec3,
@@ -147,18 +150,43 @@ def reset_hanoi_worlds(
             mocap_pos[world_id, mocap_id] = pos
             mocap_quat[world_id, mocap_id] = wp.quat(wp.cos(0.5 * yaw), 0.0, 0.0, wp.sin(0.5 * yaw))
 
-    yaw = _disk_yaw_for_peg(peg_yaw[world_id, init_peg])
-    stack_xy = peg_pos[world_id, init_peg]
-    for disk in range(MAX_HANOI_DISKS):
-        if disk < num_disks:
-            addr = disk_qpos_addrs[disk]
-            qpos[world_id, addr + 0] = stack_xy[0]
-            qpos[world_id, addr + 1] = stack_xy[1]
-            qpos[world_id, addr + 2] = _stack_disk_z(disk, num_disks, disk_half_height, disk_gap)
-            qpos[world_id, addr + 3] = wp.cos(0.5 * yaw)
-            qpos[world_id, addr + 4] = 0.0
-            qpos[world_id, addr + 5] = 0.0
-            qpos[world_id, addr + 6] = wp.sin(0.5 * yaw)
+    if scatter_disks != 0:
+        slots = wp.zeros(MAX_HANOI_DISKS, dtype=int)
+        for disk in range(MAX_HANOI_DISKS):
+            slots[disk] = disk
+        for disk in range(MAX_HANOI_DISKS):
+            if disk < num_disks:
+                swap_disk = disk + _reset_rand_int(seed, counter, num_disks - disk)
+                counter += 1
+                slot = slots[disk]
+                slots[disk] = slots[swap_disk]
+                slots[swap_disk] = slot
+        for disk in range(MAX_HANOI_DISKS):
+            if disk < num_disks:
+                addr = disk_qpos_addrs[disk]
+                pos = disk_staging_pos[slots[disk]]
+                yaw = _reset_rand_uniform(seed, counter, -0.5235987755982988, 0.5235987755982988)
+                counter += 1
+                qpos[world_id, addr + 0] = pos[0]
+                qpos[world_id, addr + 1] = pos[1]
+                qpos[world_id, addr + 2] = disk_half_height
+                qpos[world_id, addr + 3] = wp.cos(0.5 * yaw)
+                qpos[world_id, addr + 4] = 0.0
+                qpos[world_id, addr + 5] = 0.0
+                qpos[world_id, addr + 6] = wp.sin(0.5 * yaw)
+    else:
+        yaw = _disk_yaw_for_peg(peg_yaw[world_id, init_peg])
+        stack_xy = peg_pos[world_id, init_peg]
+        for disk in range(MAX_HANOI_DISKS):
+            if disk < num_disks:
+                addr = disk_qpos_addrs[disk]
+                qpos[world_id, addr + 0] = stack_xy[0]
+                qpos[world_id, addr + 1] = stack_xy[1]
+                qpos[world_id, addr + 2] = _stack_disk_z(disk, num_disks, disk_half_height, disk_gap)
+                qpos[world_id, addr + 3] = wp.cos(0.5 * yaw)
+                qpos[world_id, addr + 4] = 0.0
+                qpos[world_id, addr + 5] = 0.0
+                qpos[world_id, addr + 6] = wp.sin(0.5 * yaw)
 
 
 @wp.kernel

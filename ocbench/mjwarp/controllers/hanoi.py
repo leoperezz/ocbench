@@ -68,6 +68,8 @@ class HanoiMjWarpController:
 
     def _goal_pegs(self):
         goal_pegs = np.asarray(self.env.cpu_env.cur_task_info['goal_pegs'], dtype=np.int32)
+        if len(goal_pegs) == 1:
+            return int(goal_pegs[0]), int(goal_pegs[0])
         return int(goal_pegs[0]), int(goal_pegs[1])
 
     def reset(self):
@@ -122,6 +124,7 @@ class HanoiMjWarpController:
                 env.cpu_env._num_pegs,
                 goal_peg0,
                 goal_peg1,
+                int(env.cpu_env.cur_task_info.get('init_mode') == 'scattered'),
                 float(env.cpu_env._disk_half_height),
                 float(env.cpu_env._disk_gap),
                 float(env.cpu_env._peg_half_height),
@@ -195,6 +198,7 @@ class HanoiMjWarpController:
                 env.cpu_env._num_pegs,
                 goal_peg0,
                 goal_peg1,
+                int(env.cpu_env.cur_task_info.get('init_mode') == 'scattered'),
                 float(env.cpu_env._disk_half_height),
                 float(env.cpu_env._disk_gap),
                 float(env.cpu_env._peg_half_height),

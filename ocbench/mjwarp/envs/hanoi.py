@@ -112,6 +112,12 @@ class HanoiMjWarpEnv(ManipulationMjWarpEnv):
                 np.full(self._cpu_env._num_pegs, self._cpu_env._peg_half_height),
             ]
         ).astype(np.float32)
+        disk_staging_pos = np.column_stack(
+            [
+                self._cpu_env._disk_staging_positions,
+                np.full(len(self._cpu_env._disk_staging_positions), self._cpu_env._disk_half_height),
+            ]
+        ).astype(np.float32)
         wp.launch(
             self._kernels.reset_hanoi_worlds,
             dim=len(world_ids),
@@ -134,6 +140,7 @@ class HanoiMjWarpEnv(ManipulationMjWarpEnv):
                 self._gpu_peg_yaw,
                 wp.array(self._cpu_env._home_qpos.astype(np.float32), dtype=wp.float32, device=device),
                 wp.array(base_peg_pos, dtype=wp.vec3f, device=device),
+                wp.array(disk_staging_pos, dtype=wp.vec3f, device=device),
                 wp.array(self._cpu_env._effector_down_rotation.as_matrix()[None].astype(np.float32), dtype=wp.mat33f, device=device),
                 wp.array(self._T_pa_rotation[None].astype(np.float32), dtype=wp.mat33f, device=device),
                 wp.array(self._T_pa_translation[None].astype(np.float32), dtype=wp.vec3f, device=device),
@@ -144,6 +151,7 @@ class HanoiMjWarpEnv(ManipulationMjWarpEnv):
                 self._cpu_env._num_pegs,
                 int(self._cpu_env.cur_task_info['init_peg']),
                 int(self._cpu_env.cur_task_info['task_name'] == 'random'),
+                int(self._cpu_env.cur_task_info.get('init_mode') == 'scattered'),
                 float(self._cpu_env._disk_half_height),
                 float(self._cpu_env._disk_gap),
                 wp.vec3(
@@ -192,6 +200,8 @@ class HanoiMjWarpEnv(ManipulationMjWarpEnv):
         lower = (self._cpu_env._workspace_bounds[0] - 0.2).astype(np.float32)
         upper = (self._cpu_env._workspace_bounds[1] + 0.2).astype(np.float32)
         goal_pegs = np.asarray(self._cpu_env.cur_task_info['goal_pegs'], dtype=np.int32)
+        if len(goal_pegs) == 1:
+            goal_pegs = np.repeat(goal_pegs, 2)
         device = self._data.qpos.device
         self._wp.launch(
             self._kernels.clear_int_flags,
@@ -199,27 +209,28 @@ class HanoiMjWarpEnv(ManipulationMjWarpEnv):
             inputs=[self._gpu_bad_floor_contact],
             device=device,
         )
-        self._wp.launch(
-            self._kernels.hanoi_bad_floor_contacts,
-            dim=int(self._data.contact.dim.shape[0]),
-            inputs=[
-                self._data.qpos,
-                self._data.contact.geom,
-                self._data.contact.dim,
-                self._data.contact.worldid,
-                self._data.nacon,
-                self._gpu_disk_qpos_addrs,
-                self._gpu_disk_geom_ids,
-                self._gpu_disk_geom_counts,
-                self._gpu_peg_pos,
-                self._gpu_bad_floor_contact,
-                self._cpu_env._num_disks,
-                self._cpu_env._num_pegs,
-                int(self._floor_geom_id),
-                int(self._data.contact.dim.shape[0]),
-            ],
-            device=device,
-        )
+        if self._cpu_env.cur_task_info.get('init_mode') != 'scattered':
+            self._wp.launch(
+                self._kernels.hanoi_bad_floor_contacts,
+                dim=int(self._data.contact.dim.shape[0]),
+                inputs=[
+                    self._data.qpos,
+                    self._data.contact.geom,
+                    self._data.contact.dim,
+                    self._data.contact.worldid,
+                    self._data.nacon,
+                    self._gpu_disk_qpos_addrs,
+                    self._gpu_disk_geom_ids,
+                    self._gpu_disk_geom_counts,
+                    self._gpu_peg_pos,
+                    self._gpu_bad_floor_contact,
+                    self._cpu_env._num_disks,
+                    self._cpu_env._num_pegs,
+                    int(self._floor_geom_id),
+                    int(self._data.contact.dim.shape[0]),
+                ],
+                device=device,
+            )
         self._wp.launch(
             self._kernels.hanoi_success,
             dim=self._nworld,

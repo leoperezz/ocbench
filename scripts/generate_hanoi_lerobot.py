@@ -22,10 +22,17 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from tqdm import tqdm
 
 ENV_NAME = 'hanoi-cpu-triple-task2-v0'
 TASK_DESCRIPTION = 'Solve the randomized three-disk Tower of Hanoi.'
+SUBTASK_ENV_NAME = 'hanoi-cpu-triple-disk-in-tower-v0'
+SUBTASK_DESCRIPTIONS = (
+    'Place the blue disk on the center peg.',
+    'Place the yellow disk on top of the blue disk.',
+    'Place the red disk on top of the yellow disk.',
+)
 DEFAULT_FPS = 30
 DEFAULT_MAX_STEPS = 7000
 DEFAULT_CAMERAS = ('front', 'side', 'wrist')
@@ -45,6 +52,7 @@ ARM_JOINT_NAMES = (
 @dataclass(frozen=True)
 class WorkerConfig:
     temp_dir: str
+    env_name: str
     fps: int
     physics_substeps: int
     max_steps: int
@@ -53,6 +61,7 @@ class WorkerConfig:
     height: int
     successful_only: bool
     max_attempts: int
+    subtask: bool
 
 
 _WORKER_CONFIG: WorkerConfig | None = None
@@ -66,6 +75,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument('--output-dir', type=Path, default=Path('data/lerobot/hanoi-triple-task2-rgb'))
     parser.add_argument('--repo-id', default='local/hanoi-triple-task2-rgb', help='LeRobot/Hugging Face dataset ID.')
+    parser.add_argument('--env-name', default=ENV_NAME, help='Registered CPU Hanoi environment to record.')
+    parser.add_argument('--task-description', default=TASK_DESCRIPTION, help='Language instruction stored per frame.')
+    parser.add_argument(
+        '--subtask',
+        action='store_true',
+        help='Add frame-level subtask labels and meta/subtasks.parquet (disk-in-tower only).',
+    )
     parser.add_argument('--num-episodes', type=int, default=100)
     parser.add_argument(
         '--workers',
@@ -137,6 +153,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error('--no-video is not supported; this generator always creates LeRobot MP4 videos')
     if args.private and not args.push_to_hub:
         parser.error('--private requires --push-to-hub')
+    if args.subtask and args.env_name != SUBTASK_ENV_NAME:
+        parser.error(f'--subtask is not supported for {args.env_name}; it is only supported for {SUBTASK_ENV_NAME}')
     return args
 
 
@@ -164,7 +182,7 @@ def _init_worker(config: WorkerConfig) -> None:
     _WORKER_CONFIG = config
     control_timestep = 1.0 / config.fps
     _WORKER_ENV = ocbench.make(
-        ENV_NAME,
+        config.env_name,
         control_timestep=control_timestep,
         physics_timestep=control_timestep / config.physics_substeps,
         width=config.width,
@@ -214,6 +232,7 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
         rewards: list[np.ndarray] = []
         dones: list[np.ndarray] = []
         successes: list[np.ndarray] = []
+        subtask_indices: list[np.ndarray] = []
         images: dict[str, list[np.ndarray]] = {camera: [] for camera in config.cameras}
         episode_success = False
         episode_healthy = True
@@ -222,6 +241,14 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
             env_action = np.asarray(controller.select_action(observation, info, transition_idx=step), dtype=np.float32)
             env_action = np.clip(env_action, -1.0, 1.0)
             stored_action = _absolute_action(env, env_action)
+
+            if config.subtask:
+                if controller._active_subgoal is None:
+                    raise RuntimeError('The disk-in-tower controller has no active subtask.')
+                # Disk IDs 2, 1, and 0 are blue, yellow, and red. Subtask
+                # indices follow that execution order.
+                subtask_index = env.unwrapped._num_disks - 1 - controller._active_subgoal['disk']
+                subtask_indices.append(np.asarray([subtask_index], dtype=np.int64))
 
             states.append(_joint_state(env))
             actions.append(stored_action)
@@ -250,6 +277,8 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
                 'next.done': np.stack(dones),
                 'next.success': np.stack(successes),
             }
+            if config.subtask:
+                payload['subtask_index'] = np.stack(subtask_indices)
             for camera, frames in images.items():
                 payload[f'observation.images.{camera}'] = np.stack(frames)
             episode_path = Path(config.temp_dir) / f'episode_{episode_index:08d}.npz'
@@ -331,7 +360,7 @@ def _generate_episodes(config: WorkerConfig, jobs: list[tuple[int, int]], worker
             raise
 
 
-def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str]) -> dict:
+def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str], subtask: bool = False) -> dict:
     joint_names = [f'{name}.position_radians' for name in ARM_JOINT_NAMES] + ['gripper.opening']
     features = {
         'observation.state': {
@@ -344,6 +373,8 @@ def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str]) -> dict:
         'next.done': {'dtype': 'bool', 'shape': (1,), 'names': ['done']},
         'next.success': {'dtype': 'bool', 'shape': (1,), 'names': ['success']},
     }
+    if subtask:
+        features['subtask_index'] = {'dtype': 'int64', 'shape': (1,), 'names': ['subtask_index']}
     for camera in cameras:
         key = f'observation.images.{camera}'
         height, width, channels = sample[key].shape[1:]
@@ -355,7 +386,7 @@ def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str]) -> dict:
     return features
 
 
-def _validate_video_dataset(output_dir: Path, cameras: Sequence[str], fps: int) -> None:
+def _validate_video_dataset(output_dir: Path, cameras: Sequence[str], fps: int, subtask: bool = False) -> None:
     info_path = output_dir / 'meta' / 'info.json'
     with info_path.open() as file:
         info = json.load(file)
@@ -377,8 +408,32 @@ def _validate_video_dataset(output_dir: Path, cameras: Sequence[str], fps: int) 
         if not any(video_dir.rglob('*.mp4')):
             raise RuntimeError(f'No MP4 files were written for {key} under {video_dir}.')
 
+    if subtask:
+        feature = info['features'].get('subtask_index')
+        if feature is None or feature.get('dtype') != 'int64':
+            raise RuntimeError(f'subtask_index is not declared as an int64 feature in {info_path}.')
+        subtasks_path = output_dir / 'meta' / 'subtasks.parquet'
+        if not subtasks_path.is_file():
+            raise RuntimeError(f'No subtask mapping was written to {subtasks_path}.')
+        subtasks = pd.read_parquet(subtasks_path)
+        expected = pd.DataFrame(
+            {'subtask_index': range(len(SUBTASK_DESCRIPTIONS))},
+            index=pd.Index(SUBTASK_DESCRIPTIONS, name='subtask'),
+        )
+        if not subtasks.equals(expected):
+            raise RuntimeError(f'Unexpected subtask mapping in {subtasks_path}.')
 
-def _append_episode(dataset, result: dict) -> None:
+
+def _write_subtasks(output_dir: Path) -> None:
+    """Write the LeRobot subtask text-to-index mapping."""
+    subtasks = pd.DataFrame(
+        {'subtask_index': range(len(SUBTASK_DESCRIPTIONS))},
+        index=pd.Index(SUBTASK_DESCRIPTIONS, name='subtask'),
+    )
+    subtasks.to_parquet(output_dir / 'meta' / 'subtasks.parquet')
+
+
+def _append_episode(dataset, result: dict, task_description: str) -> None:
     episode_path = Path(result['path'])
     try:
         with np.load(episode_path, mmap_mode='r', allow_pickle=False) as episode:
@@ -389,7 +444,7 @@ def _append_episode(dataset, result: dict) -> None:
             length = arrays[frame_keys[0]].shape[0]
             for frame_index in range(length):
                 frame = {key: arrays[key][frame_index] for key in frame_keys}
-                frame['task'] = TASK_DESCRIPTION
+                frame['task'] = task_description
                 dataset.add_frame(frame)
             dataset.save_episode()
     finally:
@@ -411,6 +466,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix='.hanoi_lerobot_', dir=output_dir.parent) as temp_dir:
         config = WorkerConfig(
             temp_dir=temp_dir,
+            env_name=args.env_name,
             fps=args.fps,
             physics_substeps=args.physics_substeps,
             max_steps=args.max_steps,
@@ -419,6 +475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             height=args.height,
             successful_only=args.successful_only,
             max_attempts=args.max_attempts,
+            subtask=args.subtask,
         )
         jobs = _episode_jobs(args.num_episodes, args.seed)
         worker_count = min(args.workers, args.num_episodes)
@@ -437,7 +494,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             first_result = next(results)
 
             with np.load(first_result['path'], mmap_mode='r', allow_pickle=False) as sample:
-                features = _features(sample, args.cameras)
+                features = _features(sample, args.cameras, subtask=args.subtask)
             # LeRobot 0.6/PyAV expects NVENC presets as integers (1 is the
             # fastest); the FFmpeg-style string "p1" is rejected.
             encoder_preset = 1 if args.video_encoder == 'h264_nvenc' else 'veryfast'
@@ -463,7 +520,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             try:
                 for result in itertools.chain((first_result,), results):
-                    _append_episode(dataset, result)
+                    _append_episode(dataset, result, args.task_description)
                     completed += 1
                     total_frames += result['length']
                     progress.update()
@@ -475,7 +532,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             finally:
                 dataset.finalize()
 
-    _validate_video_dataset(output_dir, args.cameras, args.fps)
+    if args.subtask:
+        _write_subtasks(output_dir)
+    _validate_video_dataset(output_dir, args.cameras, args.fps, subtask=args.subtask)
     print(f'Created {output_dir} ({completed} episodes, {total_frames} frames, {args.fps} Hz).')
     if args.push_to_hub:
         dataset.push_to_hub(private=args.private)

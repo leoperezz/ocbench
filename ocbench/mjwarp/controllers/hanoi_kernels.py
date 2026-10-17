@@ -195,10 +195,33 @@ def _choose_subgoal(
     num_pegs: int,
     goal_peg0: int,
     goal_peg1: int,
+    disk_in_tower: int,
     disk_half_height: float,
     disk_gap: float,
     p_mistake: float,
 ) -> int:
+    if disk_in_tower != 0:
+        target = target_peg[world_id]
+        target_xy = peg_pos[world_id, target]
+        for level in range(MAX_HANOI_DISKS):
+            if level < num_disks:
+                disk = num_disks - 1 - level
+                pos = _disk_pos(qpos, disk_qpos_addrs, world_id, disk)
+                target_z = disk_half_height + float(level) * (2.0 * disk_half_height + disk_gap)
+                if (
+                    _dist2_xy(pos[0], pos[1], target_xy[0], target_xy[1]) > 0.04 * 0.04
+                    or wp.abs(pos[2] - target_z) > 0.03
+                ):
+                    is_mistake[world_id] = 0
+                    target_disk[world_id] = disk
+                    target_source[world_id] = -1
+                    target_pos_arr[world_id] = wp.vec3(target_xy[0], target_xy[1], target_z)
+                    target_yaw_arr[world_id] = _disk_yaw_for_peg(peg_yaw[world_id, target])
+                    agent_done[world_id] = 0
+                    return 1
+        agent_done[world_id] = 1
+        return 0
+
     stacks = wp.zeros(MAX_HANOI_STACK_SLOTS, dtype=int)
     stack_counts = wp.zeros(MAX_HANOI_PEGS, dtype=int)
     positions = wp.zeros(MAX_HANOI_DISKS, dtype=int)
@@ -558,6 +581,7 @@ def reset_controller(
     num_pegs: int,
     goal_peg0: int,
     goal_peg1: int,
+    disk_in_tower: int,
     disk_half_height: float,
     disk_gap: float,
     peg_half_height: float,
@@ -604,6 +628,7 @@ def reset_controller(
         num_pegs,
         goal_peg0,
         goal_peg1,
+        disk_in_tower,
         disk_half_height,
         disk_gap,
         p_mistake,
@@ -707,6 +732,7 @@ def make_targets(
     num_pegs: int,
     goal_peg0: int,
     goal_peg1: int,
+    disk_in_tower: int,
     disk_half_height: float,
     disk_gap: float,
     peg_half_height: float,
@@ -756,6 +782,7 @@ def make_targets(
             num_pegs,
             goal_peg0,
             goal_peg1,
+            disk_in_tower,
             disk_half_height,
             disk_gap,
             p_mistake,

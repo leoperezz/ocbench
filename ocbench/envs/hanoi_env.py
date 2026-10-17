@@ -42,6 +42,15 @@ class HanoiEnv(ManipulationEnv):
         self._peg_positions = self._base_peg_positions.copy()
         self._peg_yaws = np.zeros(self._num_pegs)
         self._peg_randomization = np.asarray([[-0.05, -0.025], [0.05, 0.025]])
+        # Fixed staging centers for the disk-in-tower task.  The disk assigned
+        # to each center and its yaw are sampled independently on every reset.
+        self._disk_staging_positions = np.array(
+            [
+                [0.24, -0.27],
+                [0.24, 0.00],
+                [0.24, 0.27],
+            ]
+        )
 
         super().__init__(
             task_id=task_id,
@@ -61,15 +70,26 @@ class HanoiEnv(ManipulationEnv):
         self.task_infos = [
             dict(
                 task_name='fixed',
+                init_mode='stack',
                 init_peg=1,
                 goal_pegs=np.array([0, 2]),
             ),
             dict(
                 task_name='random',
+                init_mode='stack',
                 init_peg=1,
                 goal_pegs=np.array([0, 2]),
             ),
         ]
+        if self._env_type == 'triple':
+            self.task_infos.append(
+                dict(
+                    task_name='disk-in-tower',
+                    init_mode='scattered',
+                    init_peg=-1,
+                    goal_pegs=np.array([1]),
+                )
+            )
 
     def set_state(self, qpos, qvel, dynamics_info=None):
         if dynamics_info is not None:
@@ -183,6 +203,21 @@ class HanoiEnv(ManipulationEnv):
             qvel[:] = 0.0
         mujoco.mj_forward(self._model, self._data)
 
+    def _set_disks_scattered(self):
+        """Place every disk on the floor at a fixed center with randomized assignment and yaw."""
+        if self._num_disks != len(self._disk_staging_positions):
+            raise ValueError('The disk-in-tower task requires exactly three disks.')
+
+        disks_by_slot = self.np_random.permutation(self._num_disks)
+        disk_yaws = self.np_random.uniform(-np.pi / 6, np.pi / 6, size=self._num_disks)
+        for slot, disk in enumerate(disks_by_slot):
+            qpos = self._data.joint(f'disk_joint_{disk}').qpos
+            qvel = self._data.joint(f'disk_joint_{disk}').qvel
+            qpos[:3] = np.array([*self._disk_staging_positions[slot], self._disk_half_height])
+            qpos[3:] = lie.SO3.from_z_radians(disk_yaws[disk]).wxyz
+            qvel[:] = 0.0
+        mujoco.mj_forward(self._model, self._data)
+
     def add_objects(self, arena_mjcf):
         # Add Hanoi defaults.
         hanoi_outer_mjcf = mjcf.from_path((self._desc_dir / 'hanoi_outer.xml').as_posix())
@@ -261,7 +296,10 @@ class HanoiEnv(ManipulationEnv):
             )
             peg_yaws = np.zeros(self._num_pegs)
         self._set_peg_layout(peg_body_positions, peg_yaws)
-        self._set_disk_stack(self.cur_task_info['init_peg'])
+        if self.cur_task_info['init_mode'] == 'scattered':
+            self._set_disks_scattered()
+        else:
+            self._set_disk_stack(self.cur_task_info['init_peg'])
 
         self.pre_step()
         mujoco.mj_forward(self._model, self._data)
@@ -304,6 +342,11 @@ class HanoiEnv(ManipulationEnv):
         return bool(np.min(np.linalg.norm(self._peg_positions - disk_pos[:2], axis=1)) <= 0.04)
 
     def _has_bad_floor_contact(self):
+        # Floor contact is the intended initial condition for disk-in-tower.
+        # Dropped disks simply make the rollout unsuccessful instead of
+        # terminating it immediately.
+        if self.cur_task_info['init_mode'] == 'scattered':
+            return False
         for disk in range(self._num_disks):
             if self._is_disk_touching_floor(disk) and not self._is_disk_through_peg(disk):
                 return True

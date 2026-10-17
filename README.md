@@ -128,7 +128,49 @@ See the [paper](https://arxiv.org/abs/2610.07056) for more details.
 | `hanoi-single` | `task1`, `task2` |
 | `hanoi-double` | `task1`, `task2` |
 | `hanoi-triple` | `task1`, `task2` |
+| `hanoi-triple-disk-in-tower` | `disk-in-tower` |
 | `bowling` | `task1` |
+
+The environment `hanoi-triple-disk-in-tower-v0` is a GPU-parallelized direct
+disk-stacking task rather than the classical Tower of Hanoi puzzle. Use
+`hanoi-cpu-triple-disk-in-tower-v0` for the single-environment CPU backend.
+The three disks start on the floor at three fixed staging centers in front of the pegs.
+Their assignment to those centers and their yaw are randomized at every reset.
+The goal is always to stack them on the center peg, with the largest disk at
+the bottom, the medium disk next, and the smallest disk on top.
+
+For example, create 1,024 parallel GPU worlds with:
+
+```python
+import ocbench
+
+env = ocbench.make('hanoi-triple-disk-in-tower-v0', nworld=1024)
+observations, info = env.reset()
+```
+
+LeRobot demonstrations for this task can be generated with:
+
+```shell
+MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
+  --env-name hanoi-cpu-triple-disk-in-tower-v0 \
+  --task-description "Stack the three scattered disks on the center peg, largest to smallest." \
+  --num-episodes 525 \
+  --workers 8 \
+  --cameras front side wrist \
+  --video \
+  --video-encoder h264_nvenc \
+  --fps 30 \
+  --subtask \
+  --output-dir data/lerobot/hanoi-triple-disk-in-tower-rgb
+```
+
+With `--subtask`, every frame also contains a `subtask_index`, and the dataset
+stores its natural-language mapping in `meta/subtasks.parquet`. The three
+subtasks describe placing the blue, yellow, and red disks, in that order. A
+subtask remains active through the frame that finishes placing its disk; the
+next frame switches to the following disk. This option is only supported for
+`hanoi-cpu-triple-disk-in-tower-v0`; using it with another environment exits
+with a `not supported` argument error.
 
 OCBench also provides several variants of the environments:
 

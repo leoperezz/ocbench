@@ -96,6 +96,9 @@ class HanoiController(Controller):
         if self._env.unwrapped._failure:
             return None
 
+        if self._env.unwrapped.cur_task_info.get('init_mode') == 'scattered':
+            return self._choose_disk_in_tower_subgoal(info)
+
         stacks = self._infer_stacks(info)
         if self._tower_success(stacks):
             return None
@@ -120,6 +123,26 @@ class HanoiController(Controller):
                 return self._make_subgoal(move, 'mistake', stacks, info)
 
         return self._make_subgoal(planned_move, 'goal', stacks, info)
+
+    def _choose_disk_in_tower_subgoal(self, info):
+        """Build one tower directly, always placing larger disks first."""
+        env = self._env.unwrapped
+        for level, disk in enumerate(range(env._num_disks - 1, -1, -1)):
+            target_pos = env._disk_pos_on_peg(self._target_peg, level)
+            disk_pos = self._disk_pos(info, disk)
+            xy_success = np.linalg.norm(disk_pos[:2] - target_pos[:2]) <= 0.04
+            z_success = np.abs(disk_pos[2] - target_pos[2]) <= 0.03
+            if not (xy_success and z_success):
+                return dict(
+                    disk=disk,
+                    source=-1,
+                    target=self._target_peg,
+                    target_pos=target_pos,
+                    target_yaw=env._disk_yaw_for_peg(self._target_peg),
+                    grasp=1.0,
+                    name='goal',
+                )
+        return None
 
     def _target_info(self, subgoal, info):
         return dict(
