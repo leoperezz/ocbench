@@ -27,7 +27,8 @@ from tqdm import tqdm
 
 ENV_NAME = 'hanoi-cpu-triple-task2-v0'
 TASK_DESCRIPTION = 'Solve the randomized three-disk Tower of Hanoi.'
-SUBTASK_ENV_NAME = 'hanoi-cpu-triple-disk-in-tower-v0'
+SUBTASK_ENV_NAME = 'hanoi-triple-disk-in-tower-v0'
+SUBTASK_CPU_ENV_NAME = 'hanoi-cpu-triple-disk-in-tower-v0'
 SUBTASK_DESCRIPTIONS = (
     'Place the blue disk on the center peg.',
     'Place the yellow disk on top of the blue disk.',
@@ -153,9 +154,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error('--no-video is not supported; this generator always creates LeRobot MP4 videos')
     if args.private and not args.push_to_hub:
         parser.error('--private requires --push-to-hub')
-    if args.subtask and args.env_name != SUBTASK_ENV_NAME:
+    if args.subtask and args.env_name not in (SUBTASK_ENV_NAME, SUBTASK_CPU_ENV_NAME):
         parser.error(f'--subtask is not supported for {args.env_name}; it is only supported for {SUBTASK_ENV_NAME}')
     return args
+
+
+def _rollout_env_name(env_name: str) -> str:
+    """Use the single-world CPU counterpart when given the public MJWarp ID."""
+    if env_name == SUBTASK_ENV_NAME:
+        return SUBTASK_CPU_ENV_NAME
+    return env_name
 
 
 def _require_lerobot():
@@ -466,7 +474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix='.hanoi_lerobot_', dir=output_dir.parent) as temp_dir:
         config = WorkerConfig(
             temp_dir=temp_dir,
-            env_name=args.env_name,
+            env_name=_rollout_env_name(args.env_name),
             fps=args.fps,
             physics_substeps=args.physics_substeps,
             max_steps=args.max_steps,

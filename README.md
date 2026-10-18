@@ -152,7 +152,7 @@ LeRobot demonstrations for this task can be generated with:
 
 ```shell
 MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
-  --env-name hanoi-cpu-triple-disk-in-tower-v0 \
+  --env-name hanoi-triple-disk-in-tower-v0 \
   --task-description "Stack the three scattered disks on the center peg, largest to smallest." \
   --num-episodes 525 \
   --workers 8 \
@@ -169,7 +169,7 @@ stores its natural-language mapping in `meta/subtasks.parquet`. The three
 subtasks describe placing the blue, yellow, and red disks, in that order. A
 subtask remains active through the frame that finishes placing its disk; the
 next frame switches to the following disk. This option is only supported for
-`hanoi-cpu-triple-disk-in-tower-v0`; using it with another environment exits
+`hanoi-triple-disk-in-tower-v0`; using it with another environment exits
 with a `not supported` argument error.
 
 OCBench also provides several variants of the environments:

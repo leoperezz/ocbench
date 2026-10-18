@@ -34,12 +34,15 @@ Useful options include `--seed`, `--fps`, `--max-steps`,
 `--video-encoder`, `--[no-]successful-only`, `--max-attempts`, `--overwrite`, and
 `--push-to-hub`. Run the script with `--help` for the complete interface.
 
-For `hanoi-cpu-triple-disk-in-tower-v0`, pass `--subtask` to add a
+For `hanoi-triple-disk-in-tower-v0`, pass `--subtask` to add a
 frame-level `subtask_index` feature and `meta/subtasks.parquet`. The subtask
 labels follow the oracle's execution order: place the blue disk, then the
 yellow disk, then the red disk. Each label includes the frame that completes
 that placement; the next frame starts the following subtask. Other environments
 report that this flag is not supported.
+
+The generator maps this public environment ID to its single-world CPU backend
+internally, so `-cpu-` is not needed in the command.
 
 `observation.state` and `action` both contain exactly seven proprioceptive robot
 values. The first six are absolute arm joint positions in radians and the last
