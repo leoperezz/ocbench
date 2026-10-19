@@ -245,6 +245,12 @@ register(
     max_episode_steps=7000,
     kwargs=dict(env_type='triple', task_id=3),
 )
+register(
+    id='hanoi-cpu-triple-disk-in-tower-autoreset-v0',
+    entry_point='ocbench.envs.hanoi_env:HanoiEnv',
+    max_episode_steps=14000,
+    kwargs=dict(env_type='triple', task_id=4, terminate_at_success=False),
+)
 
 # Bowling environment.
 register(

@@ -35,9 +35,10 @@ def make_env(family, env_kwargs, nworld):
     if family == 'hanoi':
         from ocbench.mjwarp.envs.hanoi import HanoiMjWarpEnv
 
+        terminate_at_success = env_kwargs.pop('terminate_at_success', True)
         return HanoiMjWarpEnv(
             nworld=nworld,
-            terminate_at_success=True,
+            terminate_at_success=terminate_at_success,
             physics_timestep=0.002,
             **env_kwargs,
         )

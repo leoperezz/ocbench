@@ -215,3 +215,111 @@ class HanoiController(Controller):
 
         self._active_steps += 1
         return self._agent.select_action(ob, info)
+
+
+class HanoiAutoresetController(HanoiController):
+    """Stack the scattered disks, then physically restore their initial poses.
+
+    The reset motions are part of the same rollout.  Once they finish, the
+    resulting simulator state can be used as the initial state of the next
+    episode without teleporting either the robot or the disks.
+    """
+
+    STACK_TASK_INDEX = 0
+    RESET_TASK_INDEX = 1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._phase = 'stack'
+        self._reset_disk_poses = {}
+        self._reset_slots = {}
+
+    @property
+    def task_index(self):
+        return self.STACK_TASK_INDEX if self._phase == 'stack' else self.RESET_TASK_INDEX
+
+    @property
+    def subtask_index(self):
+        if self._active_subgoal is None:
+            return None
+        disk = self._active_subgoal['disk']
+        if self._phase == 'stack':
+            return self._env.unwrapped._num_disks - 1 - disk
+        return self._env.unwrapped._num_disks + disk * self._env.unwrapped._num_disks + self._reset_slots[disk]
+
+    def _sample_reset_poses(self, info):
+        """Sample a valid floor permutation different from the current one."""
+        env = self._env.unwrapped
+        current_slots = np.array(
+            [
+                np.argmin(np.linalg.norm(env._disk_staging_positions - self._disk_pos(info, disk)[:2], axis=1))
+                for disk in range(env._num_disks)
+            ],
+            dtype=int,
+        )
+        reset_slots = np.random.permutation(env._num_disks)
+        while np.array_equal(reset_slots, current_slots):
+            reset_slots = np.random.permutation(env._num_disks)
+
+        reset_yaws = np.random.uniform(-np.pi / 6, np.pi / 6, size=env._num_disks)
+        self._reset_slots = {disk: int(reset_slots[disk]) for disk in range(env._num_disks)}
+        self._reset_disk_poses = {
+            disk: (
+                np.array(
+                    [
+                        *env._disk_staging_positions[self._reset_slots[disk]],
+                        env._disk_half_height,
+                    ]
+                ),
+                reset_yaws[disk],
+            )
+            for disk in range(env._num_disks)
+        }
+
+    def reset(self, ob, info, transition_idx=0):
+        env = self._env.unwrapped
+        if not env.cur_task_info.get('autoreset', False):
+            raise ValueError('HanoiAutoresetController requires the disk-in-tower-autoreset task.')
+        self._phase = 'stack'
+        self._sample_reset_poses(info)
+        super().reset(ob, info, transition_idx=transition_idx)
+
+    def _reset_subgoal(self, info):
+        env = self._env.unwrapped
+        # Unstack top-to-bottom so every disk is accessible to the gripper.
+        for disk in range(env._num_disks):
+            target_pos, target_yaw = self._reset_disk_poses[disk]
+            disk_pos = self._disk_pos(info, disk)
+            xy_success = np.linalg.norm(disk_pos[:2] - target_pos[:2]) <= 0.04
+            z_success = np.abs(disk_pos[2] - target_pos[2]) <= 0.03
+            if not (xy_success and z_success):
+                return dict(
+                    disk=disk,
+                    source=self._target_peg,
+                    target=-1,
+                    target_pos=target_pos.copy(),
+                    target_yaw=target_yaw,
+                    reset_slot=self._reset_slots[disk],
+                    grasp=1.0,
+                    name='reset',
+                )
+        return None
+
+    def _choose_subgoal(self, info):
+        if self._env.unwrapped._failure:
+            return None
+        if self._phase == 'stack':
+            subgoal = self._choose_disk_in_tower_subgoal(info)
+            if subgoal is not None:
+                return subgoal
+            self._phase = 'reset'
+        return self._reset_subgoal(info)
+
+    def _start_segment(self, subgoal, transition_idx):
+        Controller._start_segment(
+            self,
+            subtask_name='hanoi-reset' if self._phase == 'reset' else 'hanoi',
+            transition_idx=transition_idx,
+            target=self._target_info(subgoal, None),
+            is_mistake=False,
+        )

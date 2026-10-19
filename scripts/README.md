@@ -44,6 +44,27 @@ report that this flag is not supported.
 The generator maps this public environment ID to its single-world CPU backend
 internally, so `-cpu-` is not needed in the command.
 
+The autoreset variant records the arm's reset trajectory as well:
+
+```bash
+MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
+  --env-name hanoi-triple-disk-in-tower-autoreset-v0 \
+  --num-episodes 3 \
+  --workers 8 \
+  --max-steps 14000 \
+  --subtask \
+  --output-dir data/lerobot/hanoi-triple-disk-in-tower-autoreset-rgb
+```
+
+Frames use the stacking task instruction until the tower is complete and the
+reset instruction afterward. Each episode executes three placements onto the
+tower and three placements into a newly sampled floor permutation. The subtask
+mapping contains twelve labels: three for stacking and nine for every possible
+disk/floor-position pair. Parallel collection is supported: every worker owns
+one persistent environment and continues from its own previous reset endpoint.
+The resulting worker chains are independent, while all their reset endpoints
+belong to the same valid initial-state distribution.
+
 `observation.state` and `action` both contain exactly seven proprioceptive robot
 values. The first six are absolute arm joint positions in radians and the last
 is gripper opening in `[0, 1]`. The state contains the current positions and the

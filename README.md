@@ -129,6 +129,7 @@ See the [paper](https://arxiv.org/abs/2610.07056) for more details.
 | `hanoi-double` | `task1`, `task2` |
 | `hanoi-triple` | `task1`, `task2` |
 | `hanoi-triple-disk-in-tower` | `disk-in-tower` |
+| `hanoi-triple-disk-in-tower-autoreset` | `stack`, then physical `reset` |
 | `bowling` | `task1` |
 
 The environment `hanoi-triple-disk-in-tower-v0` is a GPU-parallelized direct
@@ -171,6 +172,37 @@ subtask remains active through the frame that finishes placing its disk; the
 next frame switches to the following disk. This option is only supported for
 `hanoi-triple-disk-in-tower-v0`; using it with another environment exits
 with a `not supported` argument error.
+
+The environment `hanoi-triple-disk-in-tower-autoreset-v0` extends that task
+with a physical reset performed by the same arm. Each episode first stacks the
+blue, yellow, and red disks on the center peg, then changes its frame-level
+task instruction to reset the environment and returns the disks to a newly
+sampled permutation of the three valid floor positions. The reset permutation
+is always different from the one at the start of the episode. The completed physical state,
+including the robot configuration, is restored as the next rollout handled by
+that worker; only Gym's episode/time-limit bookkeeping is reset. With multiple
+workers, each worker owns an independent environment and therefore an
+independent continuous rollout chain. Dataset episodes do not need to belong to
+one global chain because every reset endpoint follows the valid initial-state
+distribution.
+
+Generate a three-episode example with:
+
+```shell
+MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
+  --env-name hanoi-triple-disk-in-tower-autoreset-v0 \
+  --num-episodes 3 \
+  --workers 8 \
+  --max-steps 14000 \
+  --subtask \
+  --output-dir data/lerobot/hanoi-triple-disk-in-tower-autoreset-rgb
+```
+
+Each episode executes six subtasks: three stacking placements followed by one
+floor placement per disk. The metadata exposes twelve possible subtask labels:
+three stacking labels plus the nine disk/position combinations for reset
+(`3 disks × 3 floor positions`). Reset motions and camera observations are
+stored in the same episode as the stacking task.
 
 OCBench also provides several variants of the environments:
 

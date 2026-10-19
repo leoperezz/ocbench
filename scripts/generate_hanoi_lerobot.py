@@ -29,13 +29,30 @@ ENV_NAME = 'hanoi-cpu-triple-task2-v0'
 TASK_DESCRIPTION = 'Solve the randomized three-disk Tower of Hanoi.'
 SUBTASK_ENV_NAME = 'hanoi-triple-disk-in-tower-v0'
 SUBTASK_CPU_ENV_NAME = 'hanoi-cpu-triple-disk-in-tower-v0'
+AUTORESET_ENV_NAME = 'hanoi-triple-disk-in-tower-autoreset-v0'
+AUTORESET_CPU_ENV_NAME = 'hanoi-cpu-triple-disk-in-tower-autoreset-v0'
 SUBTASK_DESCRIPTIONS = (
     'Place the blue disk on the center peg.',
     'Place the yellow disk on top of the blue disk.',
     'Place the red disk on top of the yellow disk.',
 )
+AUTORESET_SUBTASK_DESCRIPTIONS = SUBTASK_DESCRIPTIONS + (
+    'Place the red disk in the left floor position.',
+    'Place the red disk in the center floor position.',
+    'Place the red disk in the right floor position.',
+    'Place the yellow disk in the left floor position.',
+    'Place the yellow disk in the center floor position.',
+    'Place the yellow disk in the right floor position.',
+    'Place the blue disk in the left floor position.',
+    'Place the blue disk in the center floor position.',
+    'Place the blue disk in the right floor position.',
+)
+AUTORESET_TASK_DESCRIPTIONS = (
+    'Stack the three scattered disks on the center peg, largest to smallest.',
+    'Reset the environment by placing every disk in a newly sampled valid floor configuration.',
+)
 DEFAULT_FPS = 30
-DEFAULT_MAX_STEPS = 7000
+DEFAULT_MAX_STEPS = 14000
 DEFAULT_CAMERAS = ('front', 'side', 'wrist')
 CAMERA_RENDER_NAMES = {
     'wrist': 'ur5e/wrist',
@@ -67,6 +84,7 @@ class WorkerConfig:
 
 _WORKER_CONFIG: WorkerConfig | None = None
 _WORKER_ENV = None
+_WORKER_SAVED_STATE: dict[str, np.ndarray] | None = None
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -154,8 +172,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error('--no-video is not supported; this generator always creates LeRobot MP4 videos')
     if args.private and not args.push_to_hub:
         parser.error('--private requires --push-to-hub')
-    if args.subtask and args.env_name not in (SUBTASK_ENV_NAME, SUBTASK_CPU_ENV_NAME):
-        parser.error(f'--subtask is not supported for {args.env_name}; it is only supported for {SUBTASK_ENV_NAME}')
+    subtask_envs = (SUBTASK_ENV_NAME, SUBTASK_CPU_ENV_NAME, AUTORESET_ENV_NAME, AUTORESET_CPU_ENV_NAME)
+    if args.subtask and args.env_name not in subtask_envs:
+        parser.error(f'--subtask is not supported for {args.env_name}; it is only supported for Hanoi stacking tasks')
     return args
 
 
@@ -163,7 +182,17 @@ def _rollout_env_name(env_name: str) -> str:
     """Use the single-world CPU counterpart when given the public MJWarp ID."""
     if env_name == SUBTASK_ENV_NAME:
         return SUBTASK_CPU_ENV_NAME
+    if env_name == AUTORESET_ENV_NAME:
+        return AUTORESET_CPU_ENV_NAME
     return env_name
+
+
+def _is_autoreset(env_name: str) -> bool:
+    return env_name in (AUTORESET_ENV_NAME, AUTORESET_CPU_ENV_NAME)
+
+
+def _subtask_descriptions(env_name: str) -> tuple[str, ...]:
+    return AUTORESET_SUBTASK_DESCRIPTIONS if _is_autoreset(env_name) else SUBTASK_DESCRIPTIONS
 
 
 def _require_lerobot():
@@ -182,12 +211,13 @@ def _require_lerobot():
 
 
 def _init_worker(config: WorkerConfig) -> None:
-    global _WORKER_CONFIG, _WORKER_ENV
+    global _WORKER_CONFIG, _WORKER_ENV, _WORKER_SAVED_STATE
 
     # Import after process creation: MuJoCo/OpenGL contexts must not be inherited.
     import ocbench
 
     _WORKER_CONFIG = config
+    _WORKER_SAVED_STATE = None
     control_timestep = 1.0 / config.fps
     _WORKER_ENV = ocbench.make(
         config.env_name,
@@ -196,6 +226,36 @@ def _init_worker(config: WorkerConfig) -> None:
         width=config.width,
         height=config.height,
     )
+
+
+def _reset_or_restore_env(env, seed: int):
+    """Reset Gym bookkeeping, restoring the previous physical end state when available."""
+    observation, info = env.reset(seed=seed)
+    if _WORKER_SAVED_STATE is None:
+        return observation, info
+
+    import mujoco
+
+    unwrapped = env.unwrapped
+    state = _WORKER_SAVED_STATE
+    unwrapped.set_state(state['qpos'], state['qvel'], dynamics_info=state['dynamics_info'])
+    unwrapped._data.ctrl[:] = state['ctrl']
+    mujoco.mj_forward(unwrapped._model, unwrapped._data)
+    mujoco.mj_rnePostConstraint(unwrapped._model, unwrapped._data)
+    unwrapped.post_step()
+    return unwrapped.compute_observation(), unwrapped.get_reset_info()
+
+
+def _save_physical_state(env) -> None:
+    global _WORKER_SAVED_STATE
+
+    unwrapped = env.unwrapped
+    _WORKER_SAVED_STATE = {
+        'qpos': unwrapped._data.qpos.copy(),
+        'qvel': unwrapped._data.qvel.copy(),
+        'ctrl': unwrapped._data.ctrl.copy(),
+        'dynamics_info': unwrapped._get_dynamics_info(),
+    }
 
 
 def _absolute_action(env, normalized_action: np.ndarray) -> np.ndarray:
@@ -221,18 +281,20 @@ def _joint_state(env) -> np.ndarray:
 
 
 def _rollout_episode(episode_index: int, seed: int) -> dict:
-    from ocbench.oracles.controllers.hanoi import HanoiController
+    from ocbench.oracles.controllers.hanoi import HanoiAutoresetController, HanoiController
 
     assert _WORKER_CONFIG is not None and _WORKER_ENV is not None
     config = _WORKER_CONFIG
     env = _WORKER_ENV
+    autoreset = _is_autoreset(config.env_name)
     last_status = ''
 
     for attempt in range(config.max_attempts):
         attempt_seed = (seed + attempt * 1_000_003) % (2**32)
         np.random.seed(attempt_seed)
-        observation, info = env.reset(seed=attempt_seed)
-        controller = HanoiController(env=env)
+        observation, info = _reset_or_restore_env(env, attempt_seed) if autoreset else env.reset(seed=attempt_seed)
+        controller_cls = HanoiAutoresetController if autoreset else HanoiController
+        controller = controller_cls(env=env)
         controller.reset(observation, info, transition_idx=0)
 
         states: list[np.ndarray] = []
@@ -241,22 +303,35 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
         dones: list[np.ndarray] = []
         successes: list[np.ndarray] = []
         subtask_indices: list[np.ndarray] = []
+        task_indices: list[np.ndarray] = []
         images: dict[str, list[np.ndarray]] = {camera: [] for camera in config.cameras}
         episode_success = False
         episode_healthy = True
 
         for step in range(config.max_steps):
             env_action = np.asarray(controller.select_action(observation, info, transition_idx=step), dtype=np.float32)
+            if controller.done:
+                if dones:
+                    dones[-1][0] = True
+                    if autoreset and not env.unwrapped._failure:
+                        rewards[-1][0] = 1.0
+                        successes[-1][0] = True
+                        episode_success = True
+                break
             env_action = np.clip(env_action, -1.0, 1.0)
             stored_action = _absolute_action(env, env_action)
 
             if config.subtask:
                 if controller._active_subgoal is None:
                     raise RuntimeError('The disk-in-tower controller has no active subtask.')
-                # Disk IDs 2, 1, and 0 are blue, yellow, and red. Subtask
-                # indices follow that execution order.
-                subtask_index = env.unwrapped._num_disks - 1 - controller._active_subgoal['disk']
+                subtask_index = (
+                    controller.subtask_index
+                    if autoreset
+                    else env.unwrapped._num_disks - 1 - controller._active_subgoal['disk']
+                )
                 subtask_indices.append(np.asarray([subtask_index], dtype=np.int64))
+            if autoreset:
+                task_indices.append(np.asarray([controller.task_index], dtype=np.int64))
 
             states.append(_joint_state(env))
             actions.append(stored_action)
@@ -267,7 +342,8 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
             next_observation, reward, terminated, truncated, info = env.step(env_action)
             timed_out = step + 1 >= config.max_steps
             done = bool(terminated or truncated or timed_out)
-            episode_success = episode_success or bool(info['success'])
+            if not autoreset:
+                episode_success = episode_success or bool(info['success'])
             episode_healthy = episode_healthy and bool(info['healthy'])
             rewards.append(np.asarray([reward], dtype=np.float32))
             dones.append(np.asarray([done], dtype=np.bool_))
@@ -287,10 +363,14 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
             }
             if config.subtask:
                 payload['subtask_index'] = np.stack(subtask_indices)
+            if autoreset:
+                payload['task_index'] = np.stack(task_indices)
             for camera, frames in images.items():
                 payload[f'observation.images.{camera}'] = np.stack(frames)
             episode_path = Path(config.temp_dir) / f'episode_{episode_index:08d}.npz'
             np.savez(episode_path, **payload)
+            if autoreset:
+                _save_physical_state(env)
             return {
                 'episode_index': episode_index,
                 'path': str(episode_path),
@@ -394,7 +474,13 @@ def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str], subtask: boo
     return features
 
 
-def _validate_video_dataset(output_dir: Path, cameras: Sequence[str], fps: int, subtask: bool = False) -> None:
+def _validate_video_dataset(
+    output_dir: Path,
+    cameras: Sequence[str],
+    fps: int,
+    subtask: bool = False,
+    subtask_descriptions: Sequence[str] = SUBTASK_DESCRIPTIONS,
+) -> None:
     info_path = output_dir / 'meta' / 'info.json'
     with info_path.open() as file:
         info = json.load(file)
@@ -425,34 +511,47 @@ def _validate_video_dataset(output_dir: Path, cameras: Sequence[str], fps: int, 
             raise RuntimeError(f'No subtask mapping was written to {subtasks_path}.')
         subtasks = pd.read_parquet(subtasks_path)
         expected = pd.DataFrame(
-            {'subtask_index': range(len(SUBTASK_DESCRIPTIONS))},
-            index=pd.Index(SUBTASK_DESCRIPTIONS, name='subtask'),
+            {
+                'subtask_index': range(len(subtask_descriptions)),
+                'subtask': list(subtask_descriptions),
+            }
         )
         if not subtasks.equals(expected):
             raise RuntimeError(f'Unexpected subtask mapping in {subtasks_path}.')
 
 
-def _write_subtasks(output_dir: Path) -> None:
-    """Write the LeRobot subtask text-to-index mapping."""
+def _write_subtasks(output_dir: Path, descriptions: Sequence[str] = SUBTASK_DESCRIPTIONS) -> None:
+    """Write the LeRobot subtask index-to-text mapping."""
     subtasks = pd.DataFrame(
-        {'subtask_index': range(len(SUBTASK_DESCRIPTIONS))},
-        index=pd.Index(SUBTASK_DESCRIPTIONS, name='subtask'),
+        {
+            'subtask_index': range(len(descriptions)),
+            'subtask': list(descriptions),
+        }
     )
     subtasks.to_parquet(output_dir / 'meta' / 'subtasks.parquet')
 
 
-def _append_episode(dataset, result: dict, task_description: str) -> None:
+def _append_episode(
+    dataset,
+    result: dict,
+    task_description: str,
+    task_descriptions: Sequence[str] | None = None,
+) -> None:
     episode_path = Path(result['path'])
     try:
         with np.load(episode_path, mmap_mode='r', allow_pickle=False) as episode:
-            frame_keys = list(episode.files)
+            frame_keys = [key for key in episode.files if key != 'task_index']
             # NpzFile.__getitem__ reads an entire member on every access. Cache
             # each array once instead of re-reading it for every frame.
             arrays = {key: episode[key] for key in frame_keys}
             length = arrays[frame_keys[0]].shape[0]
             for frame_index in range(length):
                 frame = {key: arrays[key][frame_index] for key in frame_keys}
-                frame['task'] = task_description
+                if task_descriptions is None:
+                    frame['task'] = task_description
+                else:
+                    task_index = int(episode['task_index'][frame_index, 0])
+                    frame['task'] = task_descriptions[task_index]
                 dataset.add_frame(frame)
             dataset.save_episode()
     finally:
@@ -528,7 +627,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             try:
                 for result in itertools.chain((first_result,), results):
-                    _append_episode(dataset, result, args.task_description)
+                    task_descriptions = AUTORESET_TASK_DESCRIPTIONS if _is_autoreset(args.env_name) else None
+                    _append_episode(dataset, result, args.task_description, task_descriptions=task_descriptions)
                     completed += 1
                     total_frames += result['length']
                     progress.update()
@@ -541,8 +641,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset.finalize()
 
     if args.subtask:
-        _write_subtasks(output_dir)
-    _validate_video_dataset(output_dir, args.cameras, args.fps, subtask=args.subtask)
+        _write_subtasks(output_dir, _subtask_descriptions(args.env_name))
+    _validate_video_dataset(
+        output_dir,
+        args.cameras,
+        args.fps,
+        subtask=args.subtask,
+        subtask_descriptions=_subtask_descriptions(args.env_name),
+    )
     print(f'Created {output_dir} ({completed} episodes, {total_frames} frames, {args.fps} Hz).')
     if args.push_to_hub:
         dataset.push_to_hub(private=args.private)

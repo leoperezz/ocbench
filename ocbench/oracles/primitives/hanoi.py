@@ -101,7 +101,7 @@ class HanoiPrimitive(Primitive):
         )
         release_z = disk_goal.translation()[2]
         peg_top_z = 2 * env._peg_half_height
-        if release_z < peg_top_z:
+        if plan_input.get('is_peg_target', True) and release_z < peg_top_z:
             release_z = np.random.uniform(release_z, peg_top_z)
         poses['place_start'] = self.to_pose(
             pos=np.array([*disk_goal.translation()[:2], release_z]),
@@ -221,6 +221,7 @@ class HanoiPrimitive(Primitive):
             'disk_initial': disk_initial,
             'disk_goal': disk_goal,
             'grasp': target['disk_grasp'],
+            'is_peg_target': target.get('peg', -1) >= 0,
         }
 
         times, poses, grasps = self.compute_keyframes(plan_input)

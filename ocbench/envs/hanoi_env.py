@@ -62,7 +62,8 @@ class HanoiEnv(ManipulationEnv):
         elif self._env_type == 'double':
             self._disk_colors = np.array([self._colors['red'], self._colors['blue']])
         else:
-            self._disk_colors = np.array([self._colors['red'], self._colors['orange'], self._colors['blue']])
+            middle_color = 'yellow' if self.task_infos[self._task_id - 1].get('autoreset', False) else 'orange'
+            self._disk_colors = np.array([self._colors['red'], self._colors[middle_color], self._colors['blue']])
         self._arm_sampling_bounds = np.asarray([[0.18, -0.50, 0.20], [0.67, 0.50, 0.35]])
         self._prev_dynamics_info = None
 
@@ -88,6 +89,15 @@ class HanoiEnv(ManipulationEnv):
                     init_mode='scattered',
                     init_peg=-1,
                     goal_pegs=np.array([1]),
+                )
+            )
+            self.task_infos.append(
+                dict(
+                    task_name='disk-in-tower-autoreset',
+                    init_mode='scattered',
+                    init_peg=-1,
+                    goal_pegs=np.array([1]),
+                    autoreset=True,
                 )
             )
 
