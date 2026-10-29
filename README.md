@@ -162,6 +162,8 @@ MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
   --video-encoder h264_nvenc \
   --fps 30 \
   --subtask \
+  --with-reward \
+  --with-done \
   --output-dir data/lerobot/hanoi-triple-disk-in-tower-rgb
 ```
 
@@ -172,6 +174,11 @@ subtask remains active through the frame that finishes placing its disk; the
 next frame switches to the following disk. This option is only supported for
 `hanoi-triple-disk-in-tower-v0`; using it with another environment exits
 with a `not supported` argument error.
+
+`--with-reward` stores the environment reward in the LeRobot `next.reward`
+feature (`float32`), while `--with-done` stores `next.done` as a boolean for
+terminated, truncated, or generator-timeout transitions. Their schemas are
+recorded in `meta/info.json`.
 
 The environment `hanoi-triple-disk-in-tower-autoreset-v0` extends that task
 with a physical reset performed by the same arm. Each episode first stacks the

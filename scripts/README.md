@@ -21,6 +21,8 @@ MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
   --video \
   --video-encoder h264_nvenc \
   --fps 30 \
+  --with-reward \
+  --with-done \
   --output-dir data/lerobot/hanoi-triple-task2-rgb
 ```
 
@@ -30,9 +32,15 @@ are stored under `videos/observation.images.<camera>/**/*.mp4`, not as image
 files. H.264, `yuv420p`, and an HWC feature schema are used for compatibility
 with the previous OCBench-to-LeRobot converter.
 
-Useful options include `--seed`, `--fps`, `--max-steps`,
+Useful options include `--seed`, `--fps`, `--max-steps`, `--with-reward`, `--with-done`,
 `--video-encoder`, `--[no-]successful-only`, `--max-attempts`, `--overwrite`, and
 `--push-to-hub`. Run the script with `--help` for the complete interface.
+
+`--with-reward` adds the standard LeRobot `next.reward` feature as `float32`,
+using the reward returned by the environment for each transition. `--with-done`
+adds `next.done` as a boolean; it is true when that transition terminates,
+truncates, or reaches the configured generator time limit. Both features and
+their types are included in `meta/info.json` when enabled.
 
 For `hanoi-triple-disk-in-tower-v0`, pass `--subtask` to add a
 frame-level `subtask_index` feature and `meta/subtasks.parquet`. The subtask

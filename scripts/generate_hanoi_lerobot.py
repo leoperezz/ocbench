@@ -80,6 +80,8 @@ class WorkerConfig:
     successful_only: bool
     max_attempts: int
     subtask: bool
+    with_reward: bool
+    with_done: bool
 
 
 _WORKER_CONFIG: WorkerConfig | None = None
@@ -100,6 +102,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         '--subtask',
         action='store_true',
         help='Add frame-level subtask labels and meta/subtasks.parquet (disk-in-tower only).',
+    )
+    parser.add_argument(
+        '--with-reward',
+        action='store_true',
+        help='Add the LeRobot next.reward float32 feature using rewards returned by the environment.',
+    )
+    parser.add_argument(
+        '--with-done',
+        action='store_true',
+        help='Add the LeRobot next.done boolean feature for terminated, truncated, or timed-out transitions.',
     )
     parser.add_argument('--num-episodes', type=int, default=100)
     parser.add_argument(
@@ -357,10 +369,12 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
             payload = {
                 'observation.state': np.stack(states),
                 'action': np.stack(actions),
-                'next.reward': np.stack(rewards),
-                'next.done': np.stack(dones),
                 'next.success': np.stack(successes),
             }
+            if config.with_reward:
+                payload['next.reward'] = np.stack(rewards)
+            if config.with_done:
+                payload['next.done'] = np.stack(dones)
             if config.subtask:
                 payload['subtask_index'] = np.stack(subtask_indices)
             if autoreset:
@@ -448,7 +462,13 @@ def _generate_episodes(config: WorkerConfig, jobs: list[tuple[int, int]], worker
             raise
 
 
-def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str], subtask: bool = False) -> dict:
+def _features(
+    sample: np.lib.npyio.NpzFile,
+    cameras: Sequence[str],
+    subtask: bool = False,
+    with_reward: bool = False,
+    with_done: bool = False,
+) -> dict:
     joint_names = [f'{name}.position_radians' for name in ARM_JOINT_NAMES] + ['gripper.opening']
     features = {
         'observation.state': {
@@ -457,10 +477,12 @@ def _features(sample: np.lib.npyio.NpzFile, cameras: Sequence[str], subtask: boo
             'names': joint_names,
         },
         'action': {'dtype': 'float32', 'shape': sample['action'].shape[1:], 'names': joint_names},
-        'next.reward': {'dtype': 'float32', 'shape': (1,), 'names': ['reward']},
-        'next.done': {'dtype': 'bool', 'shape': (1,), 'names': ['done']},
         'next.success': {'dtype': 'bool', 'shape': (1,), 'names': ['success']},
     }
+    if with_reward:
+        features['next.reward'] = {'dtype': 'float32', 'shape': (1,), 'names': ['reward']}
+    if with_done:
+        features['next.done'] = {'dtype': 'bool', 'shape': (1,), 'names': ['done']}
     if subtask:
         features['subtask_index'] = {'dtype': 'int64', 'shape': (1,), 'names': ['subtask_index']}
     for camera in cameras:
@@ -480,6 +502,8 @@ def _validate_video_dataset(
     fps: int,
     subtask: bool = False,
     subtask_descriptions: Sequence[str] = SUBTASK_DESCRIPTIONS,
+    with_reward: bool = False,
+    with_done: bool = False,
 ) -> None:
     info_path = output_dir / 'meta' / 'info.json'
     with info_path.open() as file:
@@ -489,6 +513,17 @@ def _validate_video_dataset(
         raise RuntimeError(f'Expected LeRobot v3.0 metadata in {info_path}.')
     if info.get('fps') != fps:
         raise RuntimeError(f'Expected {fps} FPS in {info_path}, got {info.get("fps")}.')
+
+    optional_features = {
+        'next.reward': ('float32', with_reward),
+        'next.done': ('bool', with_done),
+    }
+    for key, (dtype, enabled) in optional_features.items():
+        feature = info['features'].get(key)
+        if enabled and (feature is None or feature.get('dtype') != dtype):
+            raise RuntimeError(f'{key} is not declared as a {dtype} feature in {info_path}.')
+        if not enabled and feature is not None:
+            raise RuntimeError(f'{key} is present in {info_path} without its corresponding generator flag.')
 
     for camera in cameras:
         key = f'observation.images.{camera}'
@@ -583,6 +618,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             successful_only=args.successful_only,
             max_attempts=args.max_attempts,
             subtask=args.subtask,
+            with_reward=args.with_reward,
+            with_done=args.with_done,
         )
         jobs = _episode_jobs(args.num_episodes, args.seed)
         worker_count = min(args.workers, args.num_episodes)
@@ -601,7 +638,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             first_result = next(results)
 
             with np.load(first_result['path'], mmap_mode='r', allow_pickle=False) as sample:
-                features = _features(sample, args.cameras, subtask=args.subtask)
+                features = _features(
+                    sample,
+                    args.cameras,
+                    subtask=args.subtask,
+                    with_reward=args.with_reward,
+                    with_done=args.with_done,
+                )
             # LeRobot 0.6/PyAV expects NVENC presets as integers (1 is the
             # fastest); the FFmpeg-style string "p1" is rejected.
             encoder_preset = 1 if args.video_encoder == 'h264_nvenc' else 'veryfast'
@@ -648,6 +691,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.fps,
         subtask=args.subtask,
         subtask_descriptions=_subtask_descriptions(args.env_name),
+        with_reward=args.with_reward,
+        with_done=args.with_done,
     )
     print(f'Created {output_dir} ({completed} episodes, {total_frames} frames, {args.fps} Hz).')
     if args.push_to_hub:
