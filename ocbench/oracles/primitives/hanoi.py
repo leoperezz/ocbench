@@ -191,25 +191,21 @@ class HanoiPrimitive(Primitive):
         disk_initial_yaw = info[f'privileged/disk_{disk}_yaw'][0]
         disk_initial_pos[:2] += env._disk_grasp_offset(disk, disk_initial_yaw, grasp_sign, grasp_fraction)
         disk_initial_pos[2] += grasp_z_offset
-        disk_initial = self.shortest_yaw(
-            eff_yaw=info['proprio/effector_yaw'][0],
-            obj_yaw=disk_initial_yaw + np.pi / 2,
-            translation=disk_initial_pos,
-            n=2,
-        )
+        # The wrist camera is offset along negative effector X. Put the hole
+        # on that side of the grasp; the pi-equivalent yaw hides it behind the
+        # fingers. Preserve this signed orientation at the destination too.
+        grasp_yaw_offset = grasp_sign * np.pi / 2
         disk_initial = self.to_pose(
-            pos=disk_initial.translation(),
-            yaw=self.get_yaw(disk_initial) + np.random.uniform(-0.02, 0.02),
+            pos=disk_initial_pos,
+            yaw=disk_initial_yaw + grasp_yaw_offset + np.random.uniform(-0.02, 0.02),
         )
         disk_goal_pos = target['disk_goal_pos'].copy()
         disk_goal_yaw = target['disk_goal_yaw']
         disk_goal_pos[:2] += env._disk_grasp_offset(disk, disk_goal_yaw, grasp_sign, grasp_fraction)
         disk_goal_pos[2] += grasp_z_offset
-        disk_goal = self.shortest_yaw(
-            eff_yaw=self.get_yaw(disk_initial),
-            obj_yaw=disk_goal_yaw + np.pi / 2,
-            translation=disk_goal_pos,
-            n=2,
+        disk_goal = self.to_pose(
+            pos=disk_goal_pos,
+            yaw=disk_goal_yaw + grasp_yaw_offset,
         )
 
         plan_input = {

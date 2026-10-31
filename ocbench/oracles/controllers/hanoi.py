@@ -258,7 +258,7 @@ class HanoiAutoresetController(HanoiController):
             dtype=int,
         )
         reset_slots = np.random.permutation(env._num_disks)
-        while np.array_equal(reset_slots, current_slots):
+        while env._num_disks > 1 and np.array_equal(reset_slots, current_slots):
             reset_slots = np.random.permutation(env._num_disks)
 
         reset_yaws = np.random.uniform(-np.pi / 6, np.pi / 6, size=env._num_disks)

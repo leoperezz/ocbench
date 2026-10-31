@@ -71,6 +71,7 @@ ARM_JOINT_NAMES = (
 class WorkerConfig:
     temp_dir: str
     env_name: str
+    num_disks: int
     fps: int
     physics_substeps: int
     max_steps: int
@@ -97,7 +98,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument('--output-dir', type=Path, default=Path('data/lerobot/hanoi-triple-task2-rgb'))
     parser.add_argument('--repo-id', default='local/hanoi-triple-task2-rgb', help='LeRobot/Hugging Face dataset ID.')
     parser.add_argument('--env-name', default=ENV_NAME, help='Registered CPU Hanoi environment to record.')
-    parser.add_argument('--task-description', default=TASK_DESCRIPTION, help='Language instruction stored per frame.')
+    parser.add_argument(
+        '--num-disks', type=int, choices=(1, 2, 3), default=3, help='Number of disks (peg capacity: 3).'
+    )
+    parser.add_argument('--task-description', default=None, help='Language instruction stored per frame.')
     parser.add_argument(
         '--subtask',
         action='store_true',
@@ -187,6 +191,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     subtask_envs = (SUBTASK_ENV_NAME, SUBTASK_CPU_ENV_NAME, AUTORESET_ENV_NAME, AUTORESET_CPU_ENV_NAME)
     if args.subtask and args.env_name not in subtask_envs:
         parser.error(f'--subtask is not supported for {args.env_name}; it is only supported for Hanoi stacking tasks')
+    if args.task_description is None:
+        if args.env_name in subtask_envs:
+            args.task_description = (
+                f'Stack the {args.num_disks} scattered disks on the center peg, largest to smallest.'
+            )
+        else:
+            args.task_description = f'Solve the randomized {args.num_disks}-disk Tower of Hanoi.'
     return args
 
 
@@ -203,8 +214,26 @@ def _is_autoreset(env_name: str) -> bool:
     return env_name in (AUTORESET_ENV_NAME, AUTORESET_CPU_ENV_NAME)
 
 
-def _subtask_descriptions(env_name: str) -> tuple[str, ...]:
-    return AUTORESET_SUBTASK_DESCRIPTIONS if _is_autoreset(env_name) else SUBTASK_DESCRIPTIONS
+def _subtask_descriptions(env_name: str, num_disks: int = 3) -> tuple[str, ...]:
+    colors = (
+        ('blue',)
+        if num_disks == 1
+        else ('red', 'blue')
+        if num_disks == 2
+        else ('red', 'yellow' if _is_autoreset(env_name) else 'orange', 'blue')
+    )
+    stack_colors = colors[::-1]
+    descriptions = [f'Place the {stack_colors[0]} disk on the center peg.']
+    descriptions.extend(
+        f'Place the {upper} disk on top of the {lower} disk.' for lower, upper in itertools.pairwise(stack_colors)
+    )
+    if _is_autoreset(env_name):
+        descriptions.extend(
+            f'Place the {color} disk in the {slot} floor position.'
+            for color in colors
+            for slot in ('left', 'center', 'right')[:num_disks]
+        )
+    return tuple(descriptions)
 
 
 def _require_lerobot():
@@ -233,6 +262,7 @@ def _init_worker(config: WorkerConfig) -> None:
     control_timestep = 1.0 / config.fps
     _WORKER_ENV = ocbench.make(
         config.env_name,
+        num_disks=config.num_disks,
         control_timestep=control_timestep,
         physics_timestep=control_timestep / config.physics_substeps,
         width=config.width,
@@ -319,6 +349,7 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
         images: dict[str, list[np.ndarray]] = {camera: [] for camera in config.cameras}
         episode_success = False
         episode_healthy = True
+        wrist_visible = True
 
         for step in range(config.max_steps):
             env_action = np.asarray(controller.select_action(observation, info, transition_idx=step), dtype=np.float32)
@@ -329,6 +360,16 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
                         rewards[-1][0] = 1.0
                         successes[-1][0] = True
                         episode_success = True
+                break
+            # Reject the whole attempt rather than exporting insertion frames
+            # with an obscured hole, even when --no-successful-only is used.
+            primitive = controller._agent
+            if (
+                controller._active_subgoal['target'] >= 0
+                and primitive._active_vertical_phase() is primitive._vertical_phases[1]
+                and not env.unwrapped.is_disk_hole_visible(controller._active_subgoal['disk'])
+            ):
+                wrist_visible = False
                 break
             env_action = np.clip(env_action, -1.0, 1.0)
             stored_action = _absolute_action(env, env_action)
@@ -364,7 +405,7 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
             if done:
                 break
 
-        accepted = episode_healthy and (episode_success or not config.successful_only)
+        accepted = wrist_visible and episode_healthy and (episode_success or not config.successful_only)
         if accepted:
             payload = {
                 'observation.state': np.stack(states),
@@ -394,7 +435,8 @@ def _rollout_episode(episode_index: int, seed: int) -> dict:
             }
 
         last_status = (
-            f'success={episode_success}, healthy={episode_healthy}, length={len(actions)}, seed={attempt_seed}'
+            f'success={episode_success}, healthy={episode_healthy}, wrist_visible={wrist_visible}, '
+            f'length={len(actions)}, seed={attempt_seed}'
         )
 
     raise RuntimeError(
@@ -609,6 +651,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = WorkerConfig(
             temp_dir=temp_dir,
             env_name=_rollout_env_name(args.env_name),
+            num_disks=args.num_disks,
             fps=args.fps,
             physics_substeps=args.physics_substeps,
             max_steps=args.max_steps,
@@ -670,7 +713,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             try:
                 for result in itertools.chain((first_result,), results):
-                    task_descriptions = AUTORESET_TASK_DESCRIPTIONS if _is_autoreset(args.env_name) else None
+                    task_descriptions = (
+                        (args.task_description, AUTORESET_TASK_DESCRIPTIONS[1])
+                        if _is_autoreset(args.env_name)
+                        else None
+                    )
                     _append_episode(dataset, result, args.task_description, task_descriptions=task_descriptions)
                     completed += 1
                     total_frames += result['length']
@@ -684,13 +731,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dataset.finalize()
 
     if args.subtask:
-        _write_subtasks(output_dir, _subtask_descriptions(args.env_name))
+        _write_subtasks(output_dir, _subtask_descriptions(args.env_name, args.num_disks))
     _validate_video_dataset(
         output_dir,
         args.cameras,
         args.fps,
         subtask=args.subtask,
-        subtask_descriptions=_subtask_descriptions(args.env_name),
+        subtask_descriptions=_subtask_descriptions(args.env_name, args.num_disks),
         with_reward=args.with_reward,
         with_done=args.with_done,
     )

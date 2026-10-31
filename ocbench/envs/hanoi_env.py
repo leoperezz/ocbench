@@ -11,6 +11,7 @@ class HanoiEnv(ManipulationEnv):
         self,
         env_type='triple',
         task_id=1,
+        num_disks=None,
         **kwargs,
     ):
         self._env_type = env_type
@@ -23,6 +24,11 @@ class HanoiEnv(ManipulationEnv):
             self._num_disks = 3
         else:
             raise ValueError(f'Invalid env_type: {env_type}')
+
+        if num_disks is not None:
+            if isinstance(num_disks, bool) or not isinstance(num_disks, (int, np.integer)) or not 1 <= num_disks <= 3:
+                raise ValueError('num_disks must be an integer between 1 and 3 (the peg capacity).')
+            self._num_disks = int(num_disks)
 
         self._peg_half_size = np.array([0.01, 0.01])
         self._peg_half_height = 0.084
@@ -57,9 +63,9 @@ class HanoiEnv(ManipulationEnv):
             **kwargs,
         )
 
-        if self._env_type == 'single':
+        if self._num_disks == 1:
             self._disk_colors = np.array([self._colors['blue']])
-        elif self._env_type == 'double':
+        elif self._num_disks == 2:
             self._disk_colors = np.array([self._colors['red'], self._colors['blue']])
         else:
             middle_color = 'yellow' if self.task_infos[self._task_id - 1].get('autoreset', False) else 'orange'
@@ -215,9 +221,6 @@ class HanoiEnv(ManipulationEnv):
 
     def _set_disks_scattered(self):
         """Place every disk on the floor at a fixed center with randomized assignment and yaw."""
-        if self._num_disks != len(self._disk_staging_positions):
-            raise ValueError('The disk-in-tower task requires exactly three disks.')
-
         disks_by_slot = self.np_random.permutation(self._num_disks)
         disk_yaws = self.np_random.uniform(-np.pi / 6, np.pi / 6, size=self._num_disks)
         for slot, disk in enumerate(disks_by_slot):
@@ -333,6 +336,35 @@ class HanoiEnv(ManipulationEnv):
 
     def _is_solved(self):
         return any(self._is_tower_on_peg(peg) for peg in self.cur_task_info['goal_pegs'])
+
+    def is_disk_hole_visible(self, disk):
+        """Check the wrist view of the hole rim, including gripper occlusion.
+
+        Sample the four inner corners on the disk's upper surface. At least
+        three must be in frame and reachable by a camera ray without hitting
+        another surface first. The peg itself may occupy the hole's center.
+        """
+        camera = self._data.camera('ur5e/wrist')
+        rotation = camera.xmat.reshape(3, 3)
+        camera_id = self._model.camera('ur5e/wrist').id
+        tan_y = np.tan(np.deg2rad(self._model.cam_fovy[camera_id] / 2))
+        tan_x = tan_y * self._render_width / self._render_height
+        qpos = self._data.joint(f'disk_joint_{disk}').qpos
+        disk_rotation = lie.SO3(wxyz=qpos[3:]).as_matrix()
+        radius = self._disk_hole_half_size + 0.002
+        visible = 0
+        for x, y in ((-radius, -radius), (-radius, radius), (radius, -radius), (radius, radius)):
+            point = qpos[:3] + disk_rotation @ np.array([x, y, self._disk_half_height])
+            ray = point - camera.xpos
+            local = rotation.T @ ray
+            if local[2] >= 0 or abs(local[0]) > -local[2] * tan_x or abs(local[1]) > -local[2] * tan_y:
+                continue
+            distance = np.linalg.norm(ray)
+            geom_id = np.array([-1], dtype=np.int32)
+            hit = mujoco.mj_ray(self._model, self._data, camera.xpos, ray / distance, None, True, -1, geom_id)
+            if geom_id[0] in self._disk_geom_id_sets[disk] and abs(hit - distance) < 0.008:
+                visible += 1
+        return visible >= 3
 
     def _is_disk_touching_floor(self, disk):
         disk_geom_ids = self._disk_geom_id_sets[disk]

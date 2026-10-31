@@ -1,7 +1,7 @@
 # LeRobot data generation
 
-`generate_hanoi_lerobot.py` records oracle demonstrations for the three-disk,
-random-layout Hanoi task (`hanoi-cpu-triple-task2-v0`) in LeRobot v3 video
+`generate_hanoi_lerobot.py` records oracle demonstrations for the random-layout
+Hanoi task (`hanoi-cpu-triple-task2-v0`) in LeRobot v3 video
 format. The simulation and the resulting H.264 videos both run at 30 Hz by
 default.
 
@@ -32,7 +32,35 @@ are stored under `videos/observation.images.<camera>/**/*.mp4`, not as image
 files. H.264, `yuv420p`, and an HWC feature schema are used for compatibility
 with the previous OCBench-to-LeRobot converter.
 
-Useful options include `--seed`, `--fps`, `--max-steps`, `--with-reward`, `--with-done`,
+Use `--num-disks 1`, `--num-disks 2`, or `--num-disks 3` (default) to choose
+how many physical disks are created, even with a `triple` environment ID.
+Three is the current peg capacity. The same option works for disk-in-tower
+and autoreset; task text and subtask labels adjust to the count. Two disks
+are red and blue; one disk is blue. Scattered layouts use the first N floor
+positions (left, center, right). With one disk, autoreset resamples its yaw
+at the same floor position. For direct environment use, pass `num_disks=2`
+to `ocbench.make(...)`.
+
+For example, to collect two-disk stacking demonstrations:
+
+```bash
+MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
+  --env-name hanoi-triple-disk-in-tower-v0 \
+  --num-disks 2 --num-episodes 100 --subtask \
+  --output-dir data/lerobot/hanoi-two-disk-stack
+```
+
+The CPU oracle orients the gripper according to the grasp side, putting the
+hole toward the wrist camera during insertion. The generator also checks
+visibility on each insertion frame: at least three of the four inner rim
+corners must be in the wrist image and unobstructed according to MuJoCo ray
+casts. An attempt that fails this check is discarded in full and retried up
+to `--max-attempts`, even with `--no-successful-only` or without recording the
+wrist stream. This check covers the insertion descent, not the entire episode
+(e.g. the empty gripper's approach or retreat). Occlusions can therefore
+increase the number of attempts needed.
+
+Useful options include `--num-disks`, `--seed`, `--fps`, `--max-steps`, `--with-reward`, `--with-done`,
 `--video-encoder`, `--[no-]successful-only`, `--max-attempts`, `--overwrite`, and
 `--push-to-hub`. Run the script with `--help` for the complete interface.
 
@@ -44,8 +72,8 @@ their types are included in `meta/info.json` when enabled.
 
 For `hanoi-triple-disk-in-tower-v0`, pass `--subtask` to add a
 frame-level `subtask_index` feature and `meta/subtasks.parquet`. The subtask
-labels follow the oracle's execution order: place the blue disk, then the
-yellow disk, then the red disk. Each label includes the frame that completes
+labels follow the oracle's execution order: with three disks, place the blue
+disk, then the orange disk (yellow in autoreset), then the red disk. Each label includes the frame that completes
 that placement; the next frame starts the following subtask. Other environments
 report that this flag is not supported.
 
@@ -65,10 +93,10 @@ MUJOCO_GL=egl python scripts/generate_hanoi_lerobot.py \
 ```
 
 Frames use the stacking task instruction until the tower is complete and the
-reset instruction afterward. Each episode executes three placements onto the
-tower and three placements into a newly sampled floor permutation. The subtask
-mapping contains twelve labels: three for stacking and nine for every possible
-disk/floor-position pair. Parallel collection is supported: every worker owns
+reset instruction afterward. Each episode executes N placements onto the
+tower and N placements into a newly sampled floor configuration. The subtask
+mapping contains N + N² labels: N for stacking and N² for every possible
+disk/floor-position pair (twelve labels with the default three disks). Parallel collection is supported: every worker owns
 one persistent environment and continues from its own previous reset endpoint.
 The resulting worker chains are independent, while all their reset endpoints
 belong to the same valid initial-state distribution.
